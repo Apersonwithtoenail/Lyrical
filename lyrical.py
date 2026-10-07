@@ -8,12 +8,11 @@ RESET = "\033[0m"
 BOLD  = "\033[1m"
 
 SHOW_ALBUM_ART = True
-ART_WIDTH      = 24
-ART_HEIGHT     = 10
+ART_WIDTH      = 22
+ART_HEIGHT     = 8
 ART_TOOL       = "timg"
 
 CURRENT_COLOR = "\033[1;92m"
-CURR_OFFSET   = 3        # how many lines above the highlighted line
 
 def color_for(d):
     if d == 1: return "\033[38;5;250m"
@@ -21,10 +20,10 @@ def color_for(d):
     if d == 3: return "\033[38;5;240m"
     return "\033[38;5;238m"
 
-def fmt_time(sec):
-    if sec is None: return "0:00"
-    sec = int(sec)
-    return f"{sec // 60}:{sec % 60:02d}"
+def fmt_time(s):
+    if s is None: return "0:00"
+    s = int(s)
+    return f"{s // 60}:{s % 60:02d}"
 
 def run(cmd):
     try:
@@ -38,12 +37,11 @@ def current_track():
     if not out: return None
     p = out.split("|||")
     if len(p) < 5: return None
-    artist, title, album, length, art = p[:5]
-    if not title: return None
-    dur = None
-    try: dur = int(length) / 1_000_000
-    except ValueError: pass
-    return artist, title, album, dur, art
+    a, t, al, ln, art = p[:5]
+    if not t: return None
+    try: dur = int(ln) / 1_000_000
+    except ValueError: dur = None
+    return a, t, al, dur, art
 
 def fetch_lyrics(artist, title, album, dur):
     params = {"artist_name": artist, "track_name": title}
@@ -51,7 +49,7 @@ def fetch_lyrics(artist, title, album, dur):
     if dur:   params["duration"]   = str(int(dur))
     try:
         req = urllib.request.Request(LRCLIB_GET + "?" + urllib.parse.urlencode(params),
-                                     headers={"User-Agent": "Lyrical/2.0"})
+                                     headers={"User-Agent": "Lyrical/2.1"})
         with urllib.request.urlopen(req, timeout=10) as r:
             d = json.load(r)
         return d.get("syncedLyrics") or d.get("plainLyrics")
@@ -59,7 +57,7 @@ def fetch_lyrics(artist, title, album, dur):
     try:
         q = urllib.parse.urlencode({"q": f"{artist} {title}"})
         req = urllib.request.Request(LRCLIB_SEARCH + "?" + q,
-                                     headers={"User-Agent": "Lyrical/2.0"})
+                                     headers={"User-Agent": "Lyrical/2.1"})
         with urllib.request.urlopen(req, timeout=10) as r:
             res = json.load(r)
         if res: return res[0].get("syncedLyrics") or res[0].get("plainLyrics")
@@ -103,15 +101,15 @@ def render_art(art_url):
         return None
 
 def gradient_bar(filled, total):
-    out = []
+    parts = []
     for i in range(total):
         if i < filled:
             f = i / max(1, total - 1)
             c = "\033[38;5;82m" if f < 0.5 else ("\033[38;5;226m" if f < 0.8 else "\033[38;5;203m")
-            out.append(f"{c}\u2588{RESET}")
+            parts.append(f"{c}\u2588{RESET}")
         else:
-            out.append("\033[38;5;238m\u2591\033[0m")
-    return "".join(out)
+            parts.append("\033[38;5;238m\u2591\033[0m")
+    return "".join(parts)
 
 def cline(s, cols):
     pad = max(0, (cols - vlen(s)) // 2)
@@ -120,7 +118,6 @@ def cline(s, cols):
 def build(artist, title, lyrics, synced, idx, pos, dur, art, cols, rows):
     lines = []
     lines.append(cline(f"{BOLD}{artist} \u2014 {title}{RESET}", cols))
-    lines.append("")
     if art:
         bw = max(vlen(l) for l in art)
         pad = max(0, (cols - bw) // 2)
@@ -131,15 +128,19 @@ def build(artist, title, lyrics, synced, idx, pos, dur, art, cols, rows):
         fil = int(bw * min(pos / dur, 1.0))
         lines.append(cline(gradient_bar(fil, bw), cols))
         lines.append(cline(f"\033[38;5;245m{fmt_time(pos)} / {fmt_time(dur)}{RESET}", cols))
-    lines.append("")  # single gap before lyrics
 
-    # lyrics: current line sits at fixed row = len(lines) + CURR_OFFSET
-    start = max(0, idx - CURR_OFFSET) if idx >= 0 else 0
-    remaining = rows - len(lines) - CURR_OFFSET
-    if remaining < 1: remaining = 1
-    end = min(len(lyrics), start + remaining) if idx >= 0 else min(len(lyrics), remaining)
+    # lyrics fill remaining rows. current line sits at row (top_of_lyrics + 3)
+    top_of_lyrics = len(lines)
+    avail = rows - top_of_lyrics
+    if idx < 0:
+        show = min(len(lyrics), avail)
+        start = 0
+    else:
+        CURR_ROW_FROM_TOP = 3
+        start = max(0, idx - CURR_ROW_FROM_TOP)
+        show = min(len(lyrics) - start, avail)
 
-    for i in range(start, end):
+    for i in range(start, start + show):
         _, txt = lyrics[i]
         if synced and i == idx:
             line = f"{CURRENT_COLOR}\u25b6  {txt}  \u25c0{RESET}"
@@ -148,18 +149,26 @@ def build(artist, title, lyrics, synced, idx, pos, dur, art, cols, rows):
             line = f"{color_for(d)}{txt}{RESET}"
         lines.append(cline(line, cols))
 
-    while len(lines) < rows:
-        lines.append("")
-    return lines[:rows]
+    return lines
 
-def write_frame(lines):
-    # cursor home + overwrite each line, clearing to EOL. No full-screen wipe.
-    buf = ["\033[H"]
-    for i, l in enumerate(lines):
-        buf.append(l + "\033[K")
-        if i < len(lines) - 1:
-            buf.append("\n")
-    sys.stdout.write("".join(buf))
+def write_frame(lines, cols, rows):
+    """Absolute cursor positioning. No newlines → no scrollback growth."""
+    out = ["\033[?25l"]  # hide cursor
+    for i in range(rows):
+        row = i + 1
+        out.append(f"\033[{row};1H\033[K")   # move to row, clear it
+        if i < len(lines):
+            out.append(lines[i])
+    out.append("\033[?25h")  # show cursor
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+
+def enter_alt():
+    sys.stdout.write("\033[?1049h\033[H\033[2J")
+    sys.stdout.flush()
+
+def exit_alt():
+    sys.stdout.write("\033[?1049l\033[?25h")
     sys.stdout.flush()
 
 def main():
@@ -167,15 +176,15 @@ def main():
     key = None
     synced, lyrics = False, []
     art_lines = None
-    last_frame_key = None
+    last_key = None
 
     while True:
         track = current_track()
         if not track:
-            if last_frame_key != "idle":
-                sys.stdout.write("\033[H\033[2JNo MPRIS player detected.\nStart music in mpv / VLC / Rhythmbox.\n")
-                sys.stdout.flush()
-                last_frame_key = "idle"
+            if last_key != "idle":
+                cols, rows = shutil.get_terminal_size((80, 24))
+                write_frame(["", "  No MPRIS player detected.", "  Start music in mpv / VLC / Rhythmbox."], cols, rows)
+                last_key = "idle"
             time.sleep(1)
             continue
 
@@ -189,6 +198,7 @@ def main():
                 art_cache[art_url] = render_art(art_url)
             art_lines = art_cache[art_url]
             key = nk
+            last_key = None
 
         pos_s = run(["playerctl", "position"])
         try: pos = float(pos_s) if pos_s else 0.0
@@ -202,18 +212,24 @@ def main():
 
         if lyrics:
             cols, rows = shutil.get_terminal_size((80, 24))
-            # redraw only when the current line or the second changes
-            frame_key = (idx, int(pos), artist, title)
-            if frame_key != last_frame_key:
-                write_frame(build(artist, title, lyrics, synced, idx, pos, dur, art_lines, cols, rows))
-                last_frame_key = frame_key
+            k = (idx, int(pos), artist, title, cols, rows)
+            if k != last_key:
+                write_frame(build(artist, title, lyrics, synced, idx, pos, dur, art_lines, cols, rows), cols, rows)
+                last_key = k
         else:
-            if last_frame_key != f"nl_{artist}_{title}":
-                sys.stdout.write(f"\033[H\033[2J{artist} \u2014 {title}\n\nNo lyrics found.\n")
-                sys.stdout.flush()
-                last_frame_key = f"nl_{artist}_{title}"
+            k = f"nl_{artist}_{title}"
+            if last_key != k:
+                cols, rows = shutil.get_terminal_size((80, 24))
+                write_frame([f"  {artist} \u2014 {title}", "", "  No lyrics found."], cols, rows)
+                last_key = k
 
         time.sleep(0.2)
 
 if __name__ == "__main__":
-    main()
+    try:
+        enter_alt()
+        main()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        exit_alt()
