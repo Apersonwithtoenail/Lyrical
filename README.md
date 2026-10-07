@@ -1,4 +1,4 @@
-# tlyrics
+# Lyrical
 
 Terminal live lyrics for any MPRIS player — Spotify, mpv, VLC Rhythmbox, anything `playerctl` can see.
 
@@ -12,9 +12,9 @@ Synced lyrics from [LRCLIB](https://lrclib.net) (no API key needed). Centered la
 ## Install
 
 ```
-git clone https://github.com/Apersonwithtoenail/tlyrics.git
-cd tlyrics
-cp tlyrics.py ~/bin/live_lyrics.py
+git clone https://github.com/Apersonwithtoenail/Lyrical.git
+cd Lyrical
+cp Lyrical.py ~/bin/live_lyrics.py
 chmod +x ~/bin/live_lyrics.py
 ```
 
