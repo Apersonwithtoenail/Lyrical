@@ -1,44 +1,48 @@
 #!/usr/bin/env bash
-# install.sh — install Lyrical and its desktop integration
+# install.sh — install Lyrical to ~/.local/bin + app menu
 set -e
 
 APP_NAME="Lyrical"
 APP_ID="lyrical"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lyrical.py"
 
-BIN_DIR="$HOME/.local/bin"
-ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
-DESKTOP_DIR="$HOME/.local/share/applications"
+BIN="$HOME/.local/bin"
+ICONS="$HOME/.local/share/icons/hicolor/scalable/apps"
+APPS="$HOME/.local/share/applications"
+mkdir -p "$BIN" "$ICONS" "$APPS"
 
-mkdir -p "$BIN_DIR" "$ICON_DIR" "$DESKTOP_DIR"
+[ -f "$SCRIPT" ] || { echo "❌ missing: $SCRIPT"; exit 1; }
+chmod +x "$SCRIPT"
 
-# 1. symlink the launcher
-ln -sf "$SCRIPT_DIR/lyrical.py" "$BIN_DIR/lyrical"
-chmod +x "$SCRIPT_DIR/lyrical.py"
+# wrapper script — pins /usr/bin/python3 so a stray venv can't break it
+cat > "$BIN/$APP_ID" <<WRAP
+#!/usr/bin/env bash
+/usr/bin/python3 "$SCRIPT" "\$@"
+WRAP
+chmod +x "$BIN/$APP_ID"
 
-# 2. icon
-cp "$SCRIPT_DIR/assets/icon.svg" "$ICON_DIR/$APP_ID.svg"
+# icon
+cp "$(dirname "$SCRIPT")/assets/icon.svg" "$ICONS/$APP_ID.svg"
 
-# 3. .desktop
-cat > "$DESKTOP_DIR/$APP_ID.desktop" <<DESKTOP
+# .desktop
+cat > "$APPS/$APP_ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=$APP_NAME
 GenericName=Live Lyrics
 Comment=Terminal live lyrics for any MPRIS player
-Exec=python3 $HOME/.local/bin/lyrical
+Exec=$BIN/$APP_ID
 Icon=$APP_ID
 Terminal=true
 Categories=AudioVideo;Audio;Utility;
 Keywords=lyrics;music;mpris;spotify;
 DESKTOP
 
-# 4. refresh caches
-update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+# refresh
+update-desktop-database "$APPS" 2>/dev/null || true
 gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-xfce4-panel -r 2>/dev/null || true
 
 echo "✅ $APP_NAME installed"
-echo "   Run: lyrical"
-echo "   Or search '$APP_NAME' in your app menu."
-echo "   Uninstall with: ./uninstall.sh"
+echo "   Run from terminal:  $APP_ID"
+echo "   Or search the app menu."
+echo "   Uninstall:          ./uninstall.sh"
